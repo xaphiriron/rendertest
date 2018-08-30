@@ -1,0 +1,11 @@
+.cabal-sandbox/*
+cabal.sandbox.config
+dist/*
+*.hi
+*.o
+
+notes/*
+
+GPipe-2.2.3/*
+GPipe-GLFW-1.4.1.1/*
+GPipe-TextureLoad-1.0.4/*
