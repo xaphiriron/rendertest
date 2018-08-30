@@ -738,6 +738,8 @@ placeSlopes adj hex (h, c) = (SlopeHex h $ to6ple . fmap thd3 $ flattenedSlopes,
 		naiveSlopes = sortBy (comparing fst3)
 			$ zipWith (\i adjCoord -> case M.lookup adjCoord adj of
 					Nothing -> (i, 0, Flat)
+					-- don't slope towards water beds unless this tile is also a water bed, since sloping the shore towards the bed can recess the shore beneath the adjacent water edge, leading to floating water surfaces
+					Just (adjH, Biome _ _ _ l _) | isWater l && (not $ isWater $ original c) -> (i, 0, Flat)
 					Just (adjH, _) -> let rel = h - adjH
 						in (i, rel, naiveSlope rel)
 				) [0..5] $ adjacent hex
