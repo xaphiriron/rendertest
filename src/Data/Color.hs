@@ -5,11 +5,15 @@ module Data.Color
 	, hsl2rgb
 	, withAlpha
 	, asHex
+
+	, BlendableLight(..)
 	) where
 
 import Numeric (showHex)
 import Data.Monoid
 import Data.Fixed
+
+import Linear.V4
 
 data ColorHSL a = HSL
 	{ hue :: a -- [0..360)
@@ -55,8 +59,29 @@ instance Num ColorRGB where
 data ColorRGBA = RGBA8 !Int !Int !Int !Int
 	deriving (Eq, Ord, Show, Read)
 
+-- this is a kludge and isn't necessarily reasonable or correct
+instance Num ColorRGBA where
+	(RGBA8 r g b a) + (RGBA8 r' g' b' a') = RGBA8 (r + r') (g + g') (b + b') (intMult a a')
+	(RGBA8 r g b a) - (RGBA8 r' g' b' a') = RGBA8 (r - r') (g - g') (b - b') (intMult a (255 - a'))
+	(RGBA8 r g b a) * (RGBA8 r' g' b' a') = RGBA8 (r * r') (g * g') (b * b') (intMult a a')
+	negate (RGBA8 r g b a) = RGBA8 (-r) (-g) (-b) a
+	abs (RGBA8 r g b a) = RGBA8 (abs r) (abs g) (abs b) (abs a)
+	signum (RGBA8 r g b a) = RGBA8
+		(iff (r > 0) 1 (-1))
+		(iff (g > 0) 1 (-1))
+		(iff (b > 0) 1 (-1))
+		(iff (a > 0) 1 (-1))
+		where
+			iff b t f = if b then t else f
+	fromInteger i = RGBA8 (fromIntegral i) (fromIntegral i) (fromIntegral i) 255
+
+intMult :: Int -> Int -> Int
+intMult a b = (a * b) `div` 255
+
 withAlpha :: Int -> ColorRGB -> ColorRGBA
 withAlpha a (RGB8 r g b) = RGBA8 r g b a
+
+
 
 hsl2rgb :: ColorHSL Float -> ColorRGB
 hsl2rgb color = RGB8 mi mi mi + (case h' of
@@ -86,3 +111,33 @@ asHex (RGB8 r g b) = duplet 2 r ++ duplet 2 g ++ duplet 2 b
 
 between :: Ord a => a -> (a, a) -> Bool
 between x (lo, hi) = lo <= x && x < hi
+
+class Num a => BlendableLight a where
+	scale :: a -> Float -> a
+	merge :: a -> a -> a
+	asColor :: a -> V4 Float
+
+-- this is a kludge and isn't necessarily reasonable
+instance BlendableLight ColorRGB where
+	scale (RGB8 r g b) s = RGB8
+		(floor $ fromIntegral r * s)
+		(floor $ fromIntegral g * s)
+		(floor $ fromIntegral b * s)
+	merge (RGB8 r g b) (RGB8 r' g' b') = RGB8
+		(r * r' `div` 255)
+		(g * g' `div` 255)
+		(b * b' `div` 255)
+	asColor (RGB8 r g b) = (/ 255) . fromIntegral <$> V4 r g b 255
+
+instance BlendableLight ColorRGBA where
+	scale (RGBA8 r g b a) s = RGBA8
+		(floor $ fromIntegral r * s)
+		(floor $ fromIntegral g * s)
+		(floor $ fromIntegral b * s)
+		a
+	merge (RGBA8 r g b a) (RGBA8 r' g' b' a') = RGBA8
+		(r * r' `div` 255)
+		(g * g' `div` 255)
+		(b * b' `div` 255)
+		(min a a')
+	asColor (RGBA8 r g b a) = (/ 255) . fromIntegral <$> V4 r g b a

@@ -22,22 +22,22 @@ data RenderSpace a b r = RenderSpace
 	, color :: b -> r
 	}
 
-pickSpace :: [(ColorRGB, V3 Float)] -> RenderSpace a b ColorRGB -> Integer -> Maybe [TRecord ColorRGB]
+pickSpace :: BlendableLight c => [(c, V3 Float)] -> RenderSpace a b c -> Integer -> Maybe [TRecord c]
 pickSpace lights corpus i = do
 	shape <- select (space corpus) i
 	return $ renderShape (toRecord corpus) (color corpus) lights shape
 
-pickSpaceUVs :: [(ColorRGB, V3 Float)] -> RenderSpace a b ColorRGB -> Integer -> Maybe [TRecord (ColorRGB, V2 Float)]
+pickSpaceUVs :: BlendableLight c => [(c, V3 Float)] -> RenderSpace a b c -> Integer -> Maybe [TRecord (c, V2 Float)]
 pickSpaceUVs lights corpus i = do
 	shape <- select (space corpus) i
 	return $ renderShapeUVs (toRecord corpus) (color corpus) lights shape
 
 
-renderShape :: (a -> [TRecord b]) -> (b -> ColorRGB) -> [(ColorRGB, V3 Float)] -> a -> [TRecord ColorRGB]
+renderShape :: BlendableLight c => (a -> [TRecord b]) -> (b -> c) -> [(c, V3 Float)] -> a -> [TRecord c]
 renderShape shapeGen colorize lights shape =
 	fmap (bakeLighting colorize lights) . shapeGen $ shape
 
-renderShapeUVs :: (a -> [TRecord b]) -> (b -> ColorRGB) -> [(ColorRGB, V3 Float)] -> a -> [TRecord (ColorRGB, V2 Float)]
+renderShapeUVs :: BlendableLight c => (a -> [TRecord b]) -> (b -> c) -> [(c, V3 Float)] -> a -> [TRecord (c, V2 Float)]
 renderShapeUVs shapeGen colorize lights shape =
 	fmap
 		(withUVs (\tp uv -> (\c -> (c, uv)) <$> tp) . bakeLighting colorize lights)
@@ -45,14 +45,15 @@ renderShapeUVs shapeGen colorize lights shape =
 		$ shape
 
 
-bakeLighting :: (a -> ColorRGB) -> [(ColorRGB, V3 Float)] -> TRecord a -> TRecord ColorRGB
+bakeLighting :: BlendableLight c => (a -> c) -> [(c, V3 Float)] -> TRecord a -> TRecord c
 bakeLighting materialColor lights trec = extractRadiosity $ applyLights
 	$ (,) 0 . materialColor <$> trec
 	where
-		applyLights :: TRecord (ColorRGB, ColorRGB) -> TRecord (ColorRGB, ColorRGB)
+		-- applyLights :: BlendableLight c => TRecord (c, c) -> TRecord (c, c)
 		applyLights = appEndo $ mconcat $ Endo . uncurry light <$> lights
 
-light :: ColorRGB -> V3 Float -> TRecord (ColorRGB, ColorRGB) -> TRecord (ColorRGB, ColorRGB)
+
+light :: BlendableLight a => a -> V3 Float -> TRecord (a, a) -> TRecord (a, a)
 light color angle shape = case shape of
 	TVertex {} -> shape
 	TLine v1 v2 -> let
@@ -75,17 +76,11 @@ light color angle shape = case shape of
 	TPoly {} -> shape
 
 -- these are not doing any HDR and will absolutely overload the values to get > 255 color components given enough lights
-(^*) :: ColorRGB -> Float -> ColorRGB
-(RGB8 r g b) ^* s = RGB8
-	(floor $ fromIntegral r * s)
-	(floor $ fromIntegral g * s)
-	(floor $ fromIntegral b * s)
+(^*) :: BlendableLight a => a -> Float -> a
+(^*) = scale
 
-(^*^) :: ColorRGB -> ColorRGB -> ColorRGB
-(RGB8 r g b) ^*^ (RGB8 r' g' b') = RGB8
-	(r * r' `div` 255)
-	(g * g' `div` 255)
-	(b * b' `div` 255)
+(^*^) :: BlendableLight a => a -> a -> a
+(^*^) = merge
 
-extractRadiosity :: TRecord (ColorRGB, ColorRGB) -> TRecord ColorRGB
+extractRadiosity :: TRecord (a, b) -> TRecord a
 extractRadiosity = fmap fst

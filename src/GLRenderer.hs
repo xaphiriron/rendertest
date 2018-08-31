@@ -18,18 +18,18 @@ import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 import Data.Turtle
 import Data.Color
 
-glUVSurfaces :: [TRecord (ColorRGB, V2 Float)] -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B3 Float, B2 Float)))
+glUVSurfaces :: (BlendableLight c, Eq c, Show c) => [TRecord (c, V2 Float)] -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B4 Float, B2 Float)))
 glUVSurfaces trecs = toGLTris <$> (case posColorUVs =<< trecs of
 	[] -> Nothing
 	x -> Just x)
 
-glSurfaces :: [TRecord ColorRGB] -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B3 Float)))
+glSurfaces :: (BlendableLight c, Eq c, Show c) => [TRecord c] -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B4 Float)))
 glSurfaces trecs = toGLTris <$> (case join $ rawPtLists `mapMaybe` trecs of
 	[] -> Nothing
 	x -> Just x)
 
-glSurface :: TRecord ColorRGB -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B3 Float)))
-glSurface trec = (toGLTris :: [(V4 Float, V3 Float)] -> ContextT GLFW.Handle os IO (Buffer os (B4 Float, B3 Float))) <$> rawPtLists trec
+glSurface :: (BlendableLight c, Eq c, Show c) => TRecord c -> Maybe (ContextT GLFW.Handle os IO (Buffer os (B4 Float, B4 Float)))
+glSurface trec = (toGLTris :: [(V4 Float, V4 Float)] -> ContextT GLFW.Handle os IO (Buffer os (B4 Float, B4 Float))) <$> rawPtLists trec
 
 toGLTris :: BufferFormat b => [HostFormat b] -> ContextT GLFW.Handle os IO (Buffer os b)
 toGLTris vs = do
@@ -37,12 +37,12 @@ toGLTris vs = do
 	writeBuffer vBuffer 0 vs
 	return vBuffer
 
-rawPtLists :: TRecord ColorRGB -> Maybe [(V4 Float, V3 Float)]
+rawPtLists :: (BlendableLight c, Eq c, Show c) => TRecord c -> Maybe [(V4 Float, V4 Float)]
 rawPtLists trec = case trec of
 	TVertex {} -> Nothing
 	TLine (TP v i) (TP v' i') -> Just $ zip
 		(v32v4 <$> lineQuads)
-		(color2v3f <$>
+		(color2v4f <$>
 			[ i, i', i
 			, i, i', i'
 			])
@@ -57,20 +57,20 @@ rawPtLists trec = case trec of
 				, v - diff, v' + diff , v' - diff
 				]
 	TPoly (Convex []) -> Nothing
-	TPoly (Convex vs) -> Just $ (\(TP v i) -> (v32v4 v, color2v3f i)) <$> pts
+	TPoly (Convex vs) -> Just $ (\(TP v i) -> (v32v4 v, color2v4f i)) <$> pts
 		where
 			pts = clockwiseToTris vs
 	TPoly (Complex vs []) -> Nothing
-	TPoly (Complex vs ix) -> Just $ (\(TP v i) -> (v32v4 v, color2v3f i)) <$> pts
+	TPoly (Complex vs ix) -> Just $ (\(TP v i) -> (v32v4 v, color2v4f i)) <$> pts
 		where
 			pts = (vs !!) <$> ix
 
-posColorUVs :: TRecord (ColorRGB, V2 Float) -> [(V4 Float, V3 Float, V2 Float)]
+posColorUVs :: (BlendableLight c, Eq c, Show c) => TRecord (c, V2 Float) -> [(V4 Float, V4 Float, V2 Float)]
 posColorUVs trec = case trec of
 	TVertex {} -> []
 	TLine (TP v (i, uv)) (TP v' (i', uv')) -> zip3
 		(v32v4 <$> lineQuads)
-		(color2v3f <$>
+		(color2v4f <$>
 			[ i, i', i
 			, i, i', i'
 			])
@@ -99,17 +99,17 @@ posColorUVs trec = case trec of
 			[] -> []
 			pts -> (\(TP v (i, uv)) ->
 					( v32v4 v
-					, color2v3f i
+					, color2v4f i
 					, uv
 					)
 				) <$> pts
 
-posColor :: TRecord ColorRGB -> [(V4 Float, V3 Float)]
+posColor :: TRecord ColorRGB -> [(V4 Float, V4 Float)]
 posColor trec = case trec of
 	TVertex {} -> []
 	TLine (TP v i) (TP v' i') -> zip
 		(v32v4 <$> lineQuads)
-		(color2v3f <$>
+		(color2v4f <$>
 			[ i, i', i
 			, i, i', i'
 			])
@@ -129,7 +129,7 @@ posColor trec = case trec of
 			Complex vs ix -> (vs !!) <$> ix
 		in zip
 			(v32v4 . (\(TP v _) -> v) <$> pts)
-			(color2v3f . (\(TP _ i) -> i) <$> pts)
+			(color2v4f . (\(TP _ i) -> i) <$> pts)
 
 -- we're assuming this is a full loop, so the last value will be equal to the first one. we don't want an extra poly so we drop the final value (yes yes i know init isn't efficient; these polygons are gonna be like 8 long maximum)
 clockwiseToTris :: (Eq a, Show a) => [a] -> [a]
@@ -146,8 +146,8 @@ clockwiseToTris (o:rs) = if last rs == o
 v32v4 :: Num a => V3 a -> V4 a
 v32v4 (V3 x y z) = V4 x y z 1
 
-color2v3f :: ColorRGB -> V3 Float
-color2v3f (RGB8 r g b) = (/ 255) . fromIntegral <$> V3 r g b
+color2v3f :: BlendableLight a => a -> V3 Float
+color2v3f = (\(V4 r g b _) -> V3 r g b) . asColor
 
-color2v4f :: ColorRGB -> V4 Float
-color2v4f (RGB8 r g b) = (/ 255) . fromIntegral <$> V4 r g b 255
+color2v4f :: BlendableLight a => a -> V4 Float
+color2v4f = asColor

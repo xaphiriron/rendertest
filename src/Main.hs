@@ -178,7 +178,7 @@ foo = do
 
 	writeBuffer uimatrixBuffer 0 . pure $ identity
 
-	shader :: CompiledShader os (Texture2D os (GP.Format RGBAFloat), PrimitiveArray Triangles (B4 Float, B3 Float, B2 Float), Bool) <- compileShader $ do
+	shader :: CompiledShader os (Texture2D os (GP.Format RGBAFloat), PrimitiveArray Triangles (B4 Float, B4 Float, B2 Float), Bool) <- compileShader $ do
 		primitiveStream <- toPrimitiveStream $ \(_, v, _) -> v
 
 		samp <- newSampler2D (\(t, _, _) ->
@@ -197,7 +197,7 @@ foo = do
 				$ primitiveStream
 
 		fragmentStream <- withRasterizedInfo
-				(\(c, uv) r -> ((c `w` 1) * (sampleTexture uv), z $ rasterizedFragCoord r))
+				(\(c, uv) r -> (c * (sampleTexture uv), z $ rasterizedFragCoord r))
 			<$> rasterize
 				(const (Front, ViewPort (V2 0 0) (V2 (floor windowWidth) (floor windowHeight)), DepthRange 0 1))
 				primitiveStream2
@@ -235,15 +235,31 @@ foo = do
 			: {- (renderWithState <$> texts) -} [])
 		(0 :: Float)
 
-randomWorldRenderObject :: Texture2D os (GP.Format RGBAFloat) -> ContextT GLFW.Handle os IO (RenderObject os (B4 Float, B3 Float, B2 Float))
+randomWorldRenderObject :: Texture2D os (GP.Format RGBAFloat) -> ContextT GLFW.Handle os IO (RenderObject os (B4 Float, B4 Float, B2 Float))
 randomWorldRenderObject blank = do
 	polys <- liftIO $ generateRandomThing
-	vertexBuffer <- case glUVSurfaces polys of
-		Nothing -> error "bad space"
-		Just x -> x
-	return $ RenderObject blank [Chunk Nothing vertexBuffer World]
+	let (translucentPolys, solidPolys) = partition transRec polys
+	solidVertices <- sequenceA $ fmap (\buf -> Chunk Nothing buf World) <$> glUVSurfaces solidPolys
+	translucentVertices <- sequenceA $ fmap (\buf -> Chunk Nothing buf World) <$> glUVSurfaces translucentPolys
+	return $ RenderObject blank $ catMaybes [solidVertices, translucentVertices]
 
-generateRandomThing :: IO [TRecord (ColorRGB, V2 Float)]
+transRec :: TRecord (ColorRGBA, x) -> Bool
+transRec r = case r of
+	TVertex p -> transPt p
+	TLine p q -> transPt q || transPt q
+	TPoly sh -> case sh of
+		Convex pts -> any transPt pts
+		Complex pts _ -> any transPt pts
+
+transPt :: TPoint (ColorRGBA, x) -> Bool
+transPt (TP _ (c, _)) = isTranslucent c
+
+isTranslucent :: ColorRGBA -> Bool
+isTranslucent (RGBA8 _ _ _ a) = a < 255
+
+isOpaque = not . isTranslucent
+
+generateRandomThing :: IO [TRecord (ColorRGBA, V2 Float)]
 generateRandomThing = do
 	seed <- fst . random <$> getStdGen
 	putStrLn $ "generating new map with seed " <> show seed
@@ -256,11 +272,11 @@ generateRandomThing = do
 	setStdGen r''
 
 	let lights =
-		[ (RGB8 0xff 0xf8 0xf0, normalize $ V3 2 3 1)
-		, (RGB8 0x5f 0x80 0x90, negate $ normalize $ V3 2 3 1)
+		[ (RGBA8 0xff 0xf8 0xf0 0xff, normalize $ V3 2 3 1)
+		, (RGBA8 0x5f 0x80 0x90 0xff, negate $ normalize $ V3 2 3 1)
 --		, (RGB8 0x88 0x84 0x77, normalize $ V3 1 0.5 2)
 --		, (RGB8 0x88 0x84 0x77, normalize $ V3 2 0.5 (-1))
-		] :: [(ColorRGB, V3 Float)]
+		] :: [(ColorRGBA, V3 Float)]
 	return $ fromMaybe (error "bad selection") $ pickSpaceUVs lights fakeGraphSpace i
 
 mapButton :: GLFW.MouseButton -> Maybe Button
@@ -357,10 +373,10 @@ like right now the thing we want is just a camera? w/ state maybe just like, arr
 
 loop :: (ContextColorFormat c, DepthRenderable ds, Fractional b, Color c Float ~ V4 b) =>
 	MVar (Bool, RawCameraInput)
-	-> (((Texture2D os (GP.Format RGBAFloat)), PrimitiveArray Triangles (B4 Float, B3 Float, B2 Float), Bool) -> Render os ())
+	-> (((Texture2D os (GP.Format RGBAFloat)), PrimitiveArray Triangles (B4 Float, B4 Float, B2 Float), Bool) -> Render os ())
 	-> Window os c ds
 	-> Buffer os (Uniform (V4 (B4 Float)))
-	-> [RenderObject os (B4 Float, B3 Float, B2 Float)]
+	-> [RenderObject os (B4 Float, B4 Float, B2 Float)]
 	-> Float
 	-> ContextT GLFW.Handle os IO ()
 loop cameraVar shader win viewmatrixBuffer renderObjs = step
@@ -431,7 +447,7 @@ randomLandscapeField :: RandomGen g => Landscape -> [Landscape] -> Int -> Rand g
 	(RenderSpace
 		[TRecord (Biome Landscape)]
 		(Biome Landscape)
-		ColorRGB
+		ColorRGBA
 	)
 randomLandscapeField starting allowed size = do
 	mgr <- landscapeGraph starting allowed size
@@ -439,7 +455,12 @@ randomLandscapeField starting allowed size = do
 		Left err -> error $ show err
 		Right gr -> gr
 	recs <- graphMesh gr
-	return $ RenderSpace (pure recs) id biomeColor
+	return $ RenderSpace (pure recs) id withTranslucentWater
+
+withTranslucentWater :: Biome Landscape -> ColorRGBA
+withTranslucentWater b = case original b of
+	Lake -> withAlpha 0xc0 $ biomeColor b
+	_ -> withAlpha 0xff $ biomeColor b
 
 graphMesh :: (Graph gr, RandomGen g) => gr Location e -> Rand g [TRecord (Biome Landscape)]
 graphMesh = heightShapes

@@ -715,6 +715,7 @@ todo:
 		and they're of differing heights
 			then make the spandrel the height of the lower one, and add a vertical join (up) to the higher one -- this isn't implemented in this current code
 -}
+-- this doesn't actually cover all possible cases, so sometimes it will totally fail to generate seamless geometry. the remaining cases aren't difficult, they're just not handled
 spandrelTri :: Show a => Int -> Spandrel (Int, a) -> [TRecord a]
 spandrelTri x spandrel@(Spandrel y2 _ _ _ _) = translateRecord base <$> case first
 			[ seamless ((==) `on` fst) spandrel
