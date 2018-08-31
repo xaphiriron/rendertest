@@ -1,0 +1,10 @@
+this is the latest in a series of scratchpads for various procedural / gamedev
+code explorations. the code is not particularly well-structured.
+
+this is not currently buildable due to local dependencies. namely, the gpipe
+packages (GPipe, GPipe-GLFW, and GPipe-TextureLoad) are outdated and will not
+build with the current `base` package. my workaround for this was to turn off
+upper bound limits, cabal fetch the packages, and alter them to build locally.
+(the specific issue is that they're outdated with regards to the
+semigroup/monoid proposal, and need their Monoid instances split into
+Semigroup and Monoid instances. there are no other issues with gpipe.)
