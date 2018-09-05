@@ -4,6 +4,7 @@ module Shape.Plant
 	, GeneticPlant(..)
 	, geneticPlants
 	, plantIndex
+	, geneticPlantsRender
 
 	, branchingPlants
 	, bplantIndex
@@ -27,6 +28,7 @@ import Data.Turtle
 import Utility.SVGRender
 import qualified Shape.PlantTypes as T (Plant(..))
 
+import Shape
 
 plantIndex :: GeneticPlant -> T.Plant GIndex Identity (TurtleSymbol GIndex TPlant)
 plantIndex gen = T.PlantIndexed
@@ -34,6 +36,10 @@ plantIndex gen = T.PlantIndexed
 	(lSystemFromPlant gen)
 	[A $ Apex 0 (apexGrowthSteps gen)]
 	(GStem 0 (apexGrowthSteps gen))
+	(gindexColor gen)
+
+gindexColor :: GeneticPlant -> GIndex -> SVGDrawData
+gindexColor gen =
 	(\g -> case g of
 		GStem w i -> let
 				toHSL f = HSL f f f
@@ -137,6 +143,17 @@ data LeafStructure = LeafHex Float Int | LeafDiamond Float Int Int
 
 data Petal = Diamond Int | Triangle Int | Square Int Int
 	deriving (Eq, Ord, Show, Read)
+
+geneticPlantsRender :: Int -> RenderSpace GeneticPlant GIndex SVGDrawData
+geneticPlantsRender iterations = RenderSpace
+	geneticPlants
+	(\genome -> let T.PlantIndexed postProcess lsys seed z ix = plantIndex genome
+		in runActions (defaultTurtle z) $ getActions
+			$ postProcess =<< (evolve lsys iterations $ seed)
+	)
+	gindexColor
+
+
 
 geneticPlants :: PossibilitySpace GeneticPlant
 geneticPlants = GP

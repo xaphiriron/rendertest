@@ -1,5 +1,7 @@
 module Shape
 	( RenderSpace(..)
+	, renderMap
+
 	, pickSpace
 	, pickSpaceUVs
 	, renderShape
@@ -19,18 +21,21 @@ import Data.Turtle
 data RenderSpace a b r = RenderSpace
 	{ space :: PossibilitySpace a
 	, toRecord :: a -> [TRecord b]
-	, color :: b -> r
+	, color :: a -> b -> r
 	}
+
+renderMap :: (r -> s) -> RenderSpace a b r -> RenderSpace a b s
+renderMap f (RenderSpace s r c) = RenderSpace s r (\a b -> f . c a $ b)
 
 pickSpace :: BlendableLight c => [(c, V3 Float)] -> RenderSpace a b c -> Integer -> Maybe [TRecord c]
 pickSpace lights corpus i = do
 	shape <- select (space corpus) i
-	return $ renderShape (toRecord corpus) (color corpus) lights shape
+	return $ renderShape (toRecord corpus) (color corpus shape) lights shape
 
 pickSpaceUVs :: BlendableLight c => [(c, V3 Float)] -> RenderSpace a b c -> Integer -> Maybe [TRecord (c, V2 Float)]
 pickSpaceUVs lights corpus i = do
 	shape <- select (space corpus) i
-	return $ renderShapeUVs (toRecord corpus) (color corpus) lights shape
+	return $ renderShapeUVs (toRecord corpus) (color corpus shape) lights shape
 
 
 renderShape :: BlendableLight c => (a -> [TRecord b]) -> (b -> c) -> [(c, V3 Float)] -> a -> [TRecord c]

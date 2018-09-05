@@ -455,7 +455,7 @@ randomLandscapeField starting allowed size = do
 		Left err -> error $ show err
 		Right gr -> gr
 	recs <- graphMesh gr
-	return $ RenderSpace (pure recs) id withTranslucentWater
+	return $ RenderSpace (pure recs) id (const withTranslucentWater)
 
 withTranslucentWater :: Biome Landscape -> ColorRGBA
 withTranslucentWater b = case original b of

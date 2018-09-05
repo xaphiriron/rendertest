@@ -39,7 +39,7 @@ data TreeMaterial
 	deriving (Eq, Ord, Enum, Bounded, Show, Read)
 
 pineTrees :: RenderSpace PineTree TreeMaterial ColorRGB
-pineTrees = RenderSpace pineTree renderPine treeMatColor
+pineTrees = RenderSpace pineTree renderPine (const treeMatColor)
 
 treeMatColor :: TreeMaterial -> ColorRGB
 treeMatColor m = case m of
@@ -81,7 +81,7 @@ data BroadleafTree = Broadleaf Int Int Int Int TreeMaterial
 	deriving (Eq, Ord, Show, Read)
 
 broadleafTrees :: RenderSpace BroadleafTree TreeMaterial ColorRGB
-broadleafTrees = RenderSpace broadleafTree renderBroadleaf treeMatColor
+broadleafTrees = RenderSpace broadleafTree renderBroadleaf (const treeMatColor)
 
 broadleafTree :: PossibilitySpace BroadleafTree
 broadleafTree = Broadleaf
@@ -108,7 +108,7 @@ renderRockCluster :: RockCluster -> [TRecord RockMaterial]
 renderRockCluster (RC rs) = renderRock =<< rs
 
 rockClusters :: RockMaterial -> RenderSpace RockCluster RockMaterial ColorRGB
-rockClusters mat = RenderSpace (rockCluster mat) renderRockCluster rockMatColor
+rockClusters mat = RenderSpace (rockCluster mat) renderRockCluster (const rockMatColor)
 
 data Rock = Rock RockMaterial (V2 Int) Int Int Int Int
 	deriving (Eq, Ord, Show, Read)
@@ -131,7 +131,7 @@ renderRock (Rock mat (V2 ox oz) sides width height slope) =
 		<$> taperedPrism sides width (max 0 $ width - (height * slope `div` 2)) (height * 2)
 
 rocks :: RockMaterial -> RenderSpace Rock RockMaterial ColorRGB
-rocks mat = RenderSpace (rock mat) renderRock rockMatColor
+rocks mat = RenderSpace (rock mat) renderRock (const rockMatColor)
 
 rockMatColor :: RockMaterial -> ColorRGB
 rockMatColor m = case m of
@@ -154,7 +154,7 @@ renderStalk (Stalk height rotation) = rotateAroundY t . fmap (const Greenish) <$
 		t = fromIntegral rotation / 180 * pi
 
 grasses :: RenderSpace Grass TreeMaterial ColorRGB
-grasses = RenderSpace grass renderGrass treeMatColor
+grasses = RenderSpace grass renderGrass (const treeMatColor)
 
 grass :: PossibilitySpace Grass
 grass = (GrassTri <$> stalk <*> stalk <*> stalk)
@@ -200,7 +200,7 @@ cedarTree = CedarTree
 	<*> from [Greenish, DarkGreen]
 
 cedarTrees :: RenderSpace CedarTree TreeMaterial ColorRGB
-cedarTrees = RenderSpace cedarTree renderCedar treeMatColor
+cedarTrees = RenderSpace cedarTree renderCedar (const treeMatColor)
 
 renderCedar :: CedarTree -> [TRecord TreeMaterial]
 renderCedar (CedarTree trunkHeight baseHeight topHeight rot leafColor) = rotateAroundY rot <$>
@@ -228,7 +228,7 @@ palmTree = PalmTree
 	<*> ((\d -> pi * fromIntegral d / 180) <$> rangeNum (0, 59))
 
 palmTrees :: RenderSpace PalmTree TreeMaterial ColorRGB
-palmTrees = RenderSpace palmTree renderPalm treeMatColor
+palmTrees = RenderSpace palmTree renderPalm (\_ -> treeMatColor)
 
 renderPalm :: PalmTree -> [TRecord TreeMaterial]
 renderPalm (PalmTree trunkHeight leafSize leafCount rotation) = fmap (rotateAroundY rotation) $ mconcat

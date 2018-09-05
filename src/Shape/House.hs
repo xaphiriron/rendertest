@@ -29,7 +29,7 @@ houseSpace :: RenderSpace House Surface ColorRGB
 houseSpace = RenderSpace
 	(complexHouses (6, 8) (5, 10) (5, 10))
 	(renderHouse (-3.5) (-3.5) (\_ _ -> 0))
-	surfaceColor
+	(const surfaceColor)
 
 footprint :: House -> V2 Int
 footprint (House _ x z _ _ _) = V2 x z

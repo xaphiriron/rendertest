@@ -80,7 +80,7 @@ materialColor m = case m of
 	Bronze -> RGB8 191 143 63
 
 coinSpace :: RenderSpace Coin Material ColorRGB
-coinSpace = RenderSpace coins coinRender materialColor
+coinSpace = RenderSpace coins coinRender (const materialColor)
 
 coins :: PossibilitySpace Coin
 coins = Coin
