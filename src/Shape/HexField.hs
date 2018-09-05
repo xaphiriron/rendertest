@@ -10,6 +10,13 @@ module Shape.HexField
 
 	, SlopeHex(..)
 	, Slope(..)
+
+	-- probably shouldn't expose the raw constructor
+	, HexField(..)
+	, generateMesh
+
+	-- probably shouldn't expose at all
+	, HexStrip(..)
 	) where
 
 import Control.Arrow (first, second)
@@ -130,7 +137,6 @@ generateHexMesh extractFunc decoration strips = let
 				(completeBacks, fronts) = patches backs strip
 
 
-
 data HexStrip a = HexStrip Int [(Int, a)]
 	deriving (Eq, Ord, Show, Read)
 
@@ -180,8 +186,6 @@ coordMapStripM f (HexStrip x ys) = do
 	return $ HexStrip x ys'
 
 
-
-
 sliceHexes :: [(Hex, a)] -> [HexStrip a]
 sliceHexes hexes =
 		fmap (\vals -> toStrip vals)
@@ -222,6 +226,35 @@ decorateStrip gen (HexStrip x ys) = fmap concat $ uncurry decorate `mapM` concat
 						(rx, ry) = render $ Hex x y
 						rh = heightVal h
 					in V3 rx rh ry
+
+
+
+data HexField a = HexField [HexStrip a]
+	deriving (Eq, Ord, Show, Read, Functor)
+
+-- fieldFromMap :: Map Hex a -> HexField a
+-- singleton :: Hex -> a -> HexField a
+-- fromList :: [(Hex, a)] -> HexField a
+
+-- mapWithHex :: (Hex -> a -> b) -> HexField a -> HexField b
+
+-- mapWithContext :: (Map Hex a -> Hex -> a -> b) -> HexField a -> HexField b
+-- mapWithContextM :: Monad m => (Map Hex a -> Hex -> a -> m b) -> HexField a -> m (HexField b)
+
+generateMesh :: Show a => (a -> ColorRGBA) -> HexField a -> [TRecord (ColorRGBA, V2 Float)]
+generateMesh colorFunc (HexField strips) =
+	renderShapeUVs renderFunc colorFunc [(RGBA8 0xff 0xf8 0xf0 0xff, normalize $ V3 2 3 1)]
+		$ strips
+	where
+		-- renderFunc :: [HexStrip a] -> [TRecord a]
+		renderFunc =
+			evalRand (mkStdGen 0)
+			. generateHexMesh
+				(\t -> [(CL 0, (toFlatSlope 0, t))])
+				(\_ -> pure [])
+
+
+
 
 data SlopeHex = SlopeHex
 	{ base :: Int

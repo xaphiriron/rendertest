@@ -19,14 +19,15 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE RecursiveDo #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor #-}
 module Main where
 
 import Prelude hiding ((.), id)
 
-import Control.Arrow (first, second)
+import Control.Arrow (first, second, (***))
 import Control.Applicative
 import Control.Category
-import Control.Monad (unless, (<=<), foldM)
+import Control.Monad (unless, (<=<), foldM, join)
 import Control.Monad.IO.Class
 import Control.Concurrent
 import Control.Concurrent.STM
@@ -40,7 +41,9 @@ import qualified "GPipe-GLFW" Graphics.GPipe.Context.GLFW as GLFW
 import Data.Maybe (fromMaybe, mapMaybe, isJust, listToMaybe, catMaybes)
 import Data.Map (Map)
 import qualified Data.Map as M
+import qualified Data.Map.Merge.Lazy as M
 import Data.List (foldl', partition, sortBy)
+import Data.Foldable
 import Data.Function hiding ((.), id)
 import Data.Ord (comparing)
 import Data.Tuple (swap)
@@ -55,6 +58,8 @@ import Linear.Vector
 import Data.Color
 import Data.PossibilitySpace hiding (bounds)
 import Data.Turtle hiding (Mode(Line))
+import Utility.SVGRender (SVGDrawData(..))
+import Utility.Tuple
 import Shape
 -- import Shape.House
 -- import Shape.Coin
@@ -64,8 +69,8 @@ import GLRenderer
 
 import Shape.Tree
 
-import Reactive.Banana.Combinators (Event, Behavior, MonadMoment, filterJust, accumB, valueB, valueBLater, (<@>), stepper, never, filterE)
-import Reactive.Banana.Frameworks (EventNetwork, reactimate, actuate, compile, fromAddHandler)
+import Reactive.Banana.Combinators (Event, Behavior, MonadMoment, filterJust, accumB, valueB, valueBLater, (<@>), stepper, never, filterE, filterApply)
+import Reactive.Banana.Frameworks (EventNetwork, reactimate, actuate, compile, fromAddHandler, fromPoll, mapEventIO)
 import Control.Event.Handler
 
 import Input.Types
@@ -123,7 +128,16 @@ buttonMap b = case b of
 main :: IO ()
 main = runContextT GLFW.defaultHandleConfig foo
 
+{-
+render single terrain hex
+	render layered terrain hex
+	figure out connected overhangs
+place plant on tile
+	give plant l-system 'check environment' action & branch
+		make 'check environment' action actually read terrain data from hex grid
+	make plant autogenerate comprehensible l-system from data spec
 
+-}
 
 foo :: ContextT GLFW.Handle os IO ()
 foo = do
@@ -133,43 +147,63 @@ foo = do
 			, GLFW.configHeight = floor windowHeight
 			}
 
-	(addHandler, fire) <- liftIO $ newAddHandler
-
-	GLFW.setMouseButtonCallback win $ Just $ \button state mod -> do
-		fire $ MouseButtonEvent button state mod
-	GLFW.setCursorPosCallback win $ Just $ \x y -> do
-		fire $ CursorPosEvent x y
-	GLFW.setKeyCallback win $ Just $ \key i s mod -> do
-		fire $ KeyAction key i s mod
-	GLFW.setCharCallback win $ Just $ \char -> do
-		fire $ CharAction char
-	GLFW.setWindowCloseCallback win $ Just $ do
-		fire $ WindowClose
+	addRawGLFWHandler <- setRawCallbacks win
 
 	camVar <- liftIO $ newMVar $ (False, Cam False 0 0 0 0)
 
+	-- render state readers/writers. the writer is used in the event network, and the reader is sent to `loop` where it's polled to check for new render state
+	(write, read) <- liftIO . atomically $ do
+		write <- newBroadcastTChan
+		read <- dupTChan write
+		return (write, read)
+
+	blank :: Texture2D os (GP.Format RGBAFloat) <- newTexture2D GP.RGBA8 (V2 1 1) 1
+	writeTexture2D blank 0 (V2 0 0) (V2 1 1) [V4 1 1 1 1 :: V4 Float]
+
 	network <- liftIO $ compile $ do
-		rawEv <- fromAddHandler addHandler -- Event RawGLFW
+		rawEv <- fromAddHandler addRawGLFWHandler -- Event RawGLFW
 		windowState <- accumB (InputState (V2 0 0))
 			$ filterJust $ (\ev -> case ev of
 					CursorPosEvent x y -> Just (\s -> s { mousePosition = floor <$> V2 x y })
 					_ -> Nothing)
 				<$> rawEv
 		let fauxEvs = filterJust $ convertGLFW <$> rawEv <#> windowState
-		{-
-		uiState <- mdo
-			uiState <- stepper [] uiEventStream
-			let uiEventStream = undefined -- presumably built from checking uiState and running fauxEvs on it
-			return uiState
-		-}
-		let final = (\ev -> do
-			cameraControl camVar ev
-			case ev of
-				KeyUp Key'R -> modifyMVar_ camVar $ pure . first (const True)
-				_ -> return ()
-			--putStrLn . show $ ev
-			) <$> fauxEvs -- Event (IO ())
-		reactimate final
+
+		let randomIndex = generateRandomIndex $ renderMap svgToColor (geneticPlantsRender 0)
+
+		randFunc <- mapEventIO (\_ -> randomIndex)
+			$ fmap (const ()) $ filterE (\ev -> ev == KeyDown Key'R) fauxEvs
+		startIx <- liftIO $ randomIndex
+		randIx <- stepper startIx randFunc
+		number <- mdo
+			let updates = filterJust $ (\ev ix -> case ev of
+				KeyDown Key'Space -> Just $ first (+ 1) -- grow one step
+				KeyDown Key'R -> Just $ const 1 *** const ix -- reset back to default, but with a new seed
+				_ -> Nothing
+				) <$> fauxEvs <#> randIx
+			number <- stepper (1, startIx) $ updates <#> number
+			return number
+
+		let plevs = (\ev (steps, ix) -> case ev of
+			-- KeyUp Key'R -> modifyMVar_ camVar $ pure . first (const True)
+			-- these just both do a rerender
+			KeyUp Key'R -> do
+					putStrLn $ "(on reset) steps: " <> show steps <> "; ix: " <> show ix
+					liftIO $ atomically $ writeTChan write (1, Replace $ do
+						plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
+							$ generateSpace ix $ renderMap svgToColor (geneticPlantsRender steps)
+						plantMesh <- generateRenderObject blank plantPolys
+						return [plantMesh])
+			KeyUp Key'Space -> do
+					putStrLn $ "(on increment) steps: " <> show steps <> "; ix: " <> show ix
+					liftIO $ atomically $ writeTChan write (1, Replace $ do
+						plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
+							$ generateSpace ix $ renderMap svgToColor (geneticPlantsRender steps)
+						plantMesh <- generateRenderObject blank plantPolys
+						return [plantMesh])
+			_ -> return ()) <$> fauxEvs <#> number
+		let camera = cameraControl camVar <$> fauxEvs
+		reactimate $ camera <> plevs
 
 	liftIO $ actuate network
 
@@ -219,29 +253,98 @@ foo = do
 
 	chex <- loadTexture "img/texture.png"
 
-	blank :: Texture2D os (GP.Format RGBAFloat) <- newTexture2D GP.RGBA8 (V2 1 1) 1
-	writeTexture2D blank 0 (V2 0 0) (V2 1 1) [V4 1 1 1 1 :: V4 Float]
-
 	font <- constructFont $ \page -> case page of
 		Unicode 0 -> Just ("img/font-medium.png", V2 21 27, 32, 256)
 		Symbols -> Just ("img/symbols.png", V2 24 24, 4, 8)
 		_ -> Nothing
 
-	worldMesh <- randomWorldRenderObject blank
+	worldField <- liftIO $ genWorldField
+
+	liftIO . atomically $ do
+		writeTChan write (0, Replace $ do
+			let worldPolys = generateMesh terrainColor worldField
+			worldMesh <- generateRenderObject blank worldPolys
+			return [worldMesh])
+		writeTChan write (1, Replace $ do
+			plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
+				$ generateRandomSpace $ renderMap svgToColor (geneticPlantsRender 15)
+			plantMesh <- generateRenderObject blank plantPolys
+			return [plantMesh])
 
 	-- this doesn't take the network (anymore) b/c we don't actually use it, but probably it should so that it can pause or reactivate itself, or w/e
-	loop camVar shader win viewmatrixBuffer
-		(worldMesh
-			: {- (renderWithState <$> texts) -} [])
+	loop camVar read shader win viewmatrixBuffer
+		mempty
 		(0 :: Float)
 
-randomWorldRenderObject :: Texture2D os (GP.Format RGBAFloat) -> ContextT GLFW.Handle os IO (RenderObject os (B4 Float, B4 Float, B2 Float))
-randomWorldRenderObject blank = do
-	polys <- liftIO $ generateRandomThing
+setRawCallbacks :: Window os c ds -> ContextT GLFW.Handle os IO (AddHandler RawGLFW)
+setRawCallbacks win = do
+	(addHandler, fire) <- liftIO $ newAddHandler
+
+	GLFW.setMouseButtonCallback win $ Just $ \button state mod -> do
+		fire $ MouseButtonEvent button state mod
+	GLFW.setCursorPosCallback win $ Just $ \x y -> do
+		fire $ CursorPosEvent x y
+	GLFW.setKeyCallback win $ Just $ \key i s mod -> do
+		fire $ KeyAction key i s mod
+	GLFW.setCharCallback win $ Just $ \char -> do
+		fire $ CharAction char
+	GLFW.setWindowCloseCallback win $ Just $ do
+		fire $ WindowClose
+
+	return addHandler
+
+{-
+-- the event network would have a MVar (Map Integer (Update [RenderObject ...])) that it would push updates to. sure that would mean it might generate geometry for objects that never get rendered (due to being updated again before any renders happen) but uh for now that's fine. idk if making it `() -> [RenderObject ...]` would be any better?
+-}
+data UpdateState a = Replace a | Delete
+	deriving (Eq, Ord, Show, Read, Functor)
+
+instance Foldable UpdateState where
+	foldMap f u = case u of
+		Delete -> mempty
+		Replace a -> f a
+
+instance Traversable UpdateState where
+	sequenceA f = case f of
+		Delete -> pure Delete
+		Replace a -> Replace <$> a
+
+data Terrain = LooseSand | PackedSand | Dust | Ash | Dirt | Rock | Obsidian | RockGravel | ObsidianGravel
+	deriving (Eq, Ord, Show, Read)
+
+terrainColor :: Terrain -> ColorRGBA
+terrainColor t = case t of
+	LooseSand   -> RGBA8 0xff 0xff 0xdd 0xff
+	PackedSand  -> RGBA8 0xcc 0xcc 0x99 0xff
+	Obsidian    -> RGBA8 0x66 0x22 0x66 0xff
+	_           -> RGBA8 0xff 0x00 0xff 0xff
+
+-- presumably we want terrain stacks or smth here, not just a single terrain value
+genWorldField :: IO (HexField Terrain)
+genWorldField = do
+	seed <- fst . random <$> getStdGen
+	putStrLn $ "generating new map with seed " <> show seed
+	let (field, _) = runRand (mkStdGen seed) $ testMap
+	return field
+
+testMap :: RandomGen g => Rand g (HexField Terrain)
+testMap = do
+	-- blah blah random generator
+	return $ HexField
+		[ HexStrip 0 [(0, PackedSand)]
+		]
+
+generateRenderObject :: Texture2D os (GP.Format RGBAFloat) -> [TRecord (ColorRGBA, V2 Float)] -> ContextT GLFW.Handle os IO (RenderObject os (B4 Float, B4 Float, B2 Float))
+generateRenderObject blank polys = do
 	let (translucentPolys, solidPolys) = partition transRec polys
 	solidVertices <- sequenceA $ fmap (\buf -> Chunk Nothing buf World) <$> glUVSurfaces solidPolys
 	translucentVertices <- sequenceA $ fmap (\buf -> Chunk Nothing buf World) <$> glUVSurfaces translucentPolys
 	return $ RenderObject blank $ catMaybes [solidVertices, translucentVertices]
+
+randomWorldRenderObject :: Texture2D os (GP.Format RGBAFloat) -> ContextT GLFW.Handle os IO (RenderObject os (B4 Float, B4 Float, B2 Float))
+randomWorldRenderObject blank = do
+	polys <- liftIO $ generateRandomThing
+	generateRenderObject blank polys
 
 transRec :: TRecord (ColorRGBA, x) -> Bool
 transRec r = case r of
@@ -258,6 +361,29 @@ isTranslucent :: ColorRGBA -> Bool
 isTranslucent (RGBA8 _ _ _ a) = a < 255
 
 isOpaque = not . isTranslucent
+
+generateRandomIndex :: RenderSpace a b c -> IO Integer
+generateRandomIndex renderSpace = do
+	seed <- fst . random <$> getStdGen
+	putStrLn $ "generating new thing with seed " <> show seed
+	let (i, seed') = runRand (mkStdGen seed) $ liftRand $ randomR (0, count (space renderSpace) - 1)
+	setStdGen seed'
+	return i
+
+generateSpace :: Integer -> RenderSpace a b ColorRGBA -> IO [TRecord (ColorRGBA, V2 Float)]
+generateSpace i renderSpace = do
+	let lights =
+		[ (RGBA8 0xff 0xf8 0xf0 0xff, normalize $ V3 2 3 1)
+		, (RGBA8 0x5f 0x80 0x90 0xff, negate $ normalize $ V3 2 3 1)
+--		, (RGB8 0x88 0x84 0x77, normalize $ V3 1 0.5 2)
+--		, (RGB8 0x88 0x84 0x77, normalize $ V3 2 0.5 (-1))
+		] :: [(ColorRGBA, V3 Float)]
+	return $ fromMaybe (error "bad selection") $ pickSpaceUVs lights renderSpace i
+
+generateRandomSpace :: RenderSpace a b ColorRGBA -> IO [TRecord (ColorRGBA, V2 Float)]
+generateRandomSpace renderSpace = do
+	i <- generateRandomIndex renderSpace
+	generateSpace i renderSpace
 
 generateRandomThing :: IO [TRecord (ColorRGBA, V2 Float)]
 generateRandomThing = do
@@ -357,29 +483,50 @@ moveVector k = case k of
 	_ -> Nothing
 
 {-
-maybe replicate the lambdacube storage/renderer setup?
-have a storage object that contains a bunch of buffers
-rendering 'commands' would queue specific sections of storage to be rendered
-
 rendering a frame would require placing all relevant data in storage and then generating the commands to render it; rerendering a frame would just mean calling the commands again
 
 (you can't change uniforms _within_ the render calls, or uh shouldn't?)
 
 input is constantly being processed in the background, but that means that `keyfunc` needs some big state value to actually report events with (or maybe a minimal 'game state and real event actions' structure, w/ an event channel so it can turn raw keypresses into 'real' game events)
 
-like right now the thing we want is just a camera? w/ state maybe just like, arrow keys move, right-click + cursor rotates.
-
+with gpipe, input is only processed during the `swapWindowBuffers` call (i think). this means we'll only ever see the event network produce stuff between frames.
+each loop should render a frame and optionally try polling the network's mvar output states. if it does poll them, then it might need to update parts of the renderobject data. currently there's no way to do that (render objects are untagged and consist of an enormous chunk of totally unlabeled geometry), but that would be useful for e.g., loading and unloading geometry. something like, an mvar would contain state data to generate polys, with each state having possible values of:
+	'clean', which wouldn't need anything
+	'dirty', which would need to replace an existing render chunk
+	'new', which would need to produce a new render chunk
+	'dead', which would need to remove an existing render chunk
+or something like that, and then there would need to be some way of communicating which extant render id (if any) is tied to a given render object. so _preparing to render a frame_ would require parsing that list to update the render chunks, but rerendering a frame would just involve going down the render list rendering everything
 -}
+
+collect :: TChan a -> STM [a]
+collect ch = do
+	mv <- tryReadTChan ch
+	case mv of
+		Just v -> (v :) <$> collect ch
+		Nothing -> return []
+
+updateCache :: Ord k => Map k (UpdateState v) -> Map k v -> Map k v
+updateCache = M.merge
+	(M.mapMaybeMissing $ \k wv -> case wv of
+		Replace v -> Just v -- no value to replace, so just add it
+		Delete -> Nothing -- no value to delete, so ignore it
+		)
+	M.preserveMissing
+	(M.zipWithMaybeMatched $ \k u e -> case u of
+		Replace v -> Just v
+		Delete -> Nothing
+		)
 
 loop :: (ContextColorFormat c, DepthRenderable ds, Fractional b, Color c Float ~ V4 b) =>
 	MVar (Bool, RawCameraInput)
+	-> TChan (Integer, UpdateState (ContextT GLFW.Handle os IO [RenderObject os (B4 Float, B4 Float, B2 Float)])) -- sorry about the type
 	-> (((Texture2D os (GP.Format RGBAFloat)), PrimitiveArray Triangles (B4 Float, B4 Float, B2 Float), Bool) -> Render os ())
 	-> Window os c ds
 	-> Buffer os (Uniform (V4 (B4 Float)))
-	-> [RenderObject os (B4 Float, B4 Float, B2 Float)]
+	-> Map Integer [RenderObject os (B4 Float, B4 Float, B2 Float)]
 	-> Float
 	-> ContextT GLFW.Handle os IO ()
-loop cameraVar shader win viewmatrixBuffer renderObjs = step
+loop cameraVar readRender shader win viewmatrixBuffer renderObjs = step
 	where
 		step t = do
 			Just t' <- liftIO $ fmap realToFrac <$> GLFW.getTime
@@ -401,10 +548,13 @@ loop cameraVar shader win viewmatrixBuffer renderObjs = step
 			makeNewGeometry <- liftIO $ fst <$> readMVar cameraVar
 			liftIO $ modifyMVar_ cameraVar $ pure . first (const False)
 
+			updatedGeometry <- join . liftIO . atomically . fmap (traverse $ liftSnd . fmap sequenceA)
+				$ collect readRender
+
 			-- see this could be in the event network, right? maybe?
 			writeBuffer viewmatrixBuffer 0 . pure
-				$ perspective (deg2rad 90) (windowWidth / windowHeight) 80 2400 !*!
-					lookAt (V3 480 (-480) 0) (V3 0 0 0) (V3 0 (-1) 0) !*!
+				$ perspective (deg2rad 90) (windowWidth / windowHeight) 10 300 !*!
+					lookAt (V3 60 (-60) 0) (V3 0 0 0) (V3 0 (-1) 0) !*!
 					mkTransformation (axisAngle (V3 0 0 (-1)) ty) 0 !*!
 					mkTransformation (axisAngle (V3 0 1 0) tx) 0 !*!
 					translationMatrix (V3 cy 0 cx)
@@ -413,7 +563,7 @@ loop cameraVar shader win viewmatrixBuffer renderObjs = step
 			render $ do
 				clearWindowColor win (V4 0.9 0.8 0.7 1.0 :: Fractional b => V4 b)
 				clearWindowDepth win 1
-				(\(RenderObject blank chunks) -> renderAction blank chunks) `mapM_` renderObjs
+				(\(RenderObject blank chunks) -> renderAction blank chunks) `mapM_` fold renderObjs
 			swapWindowBuffers win
 
 			closeRequested <- GLFW.windowShouldClose win
@@ -422,12 +572,19 @@ loop cameraVar shader win viewmatrixBuffer renderObjs = step
 					else step t'
 			-}
 			newGeometry <- if makeNewGeometry
-				then Just <$> randomWorldRenderObject (nullTexture $ head renderObjs)
+				then Just <$> randomWorldRenderObject (nullTexture $ head $ fromMaybe (error "no world geometry") $ M.lookup 0 renderObjs)
 				else pure Nothing
 
-			unless (closeRequested == Just True) $ case newGeometry of
+			let newGeometry' = case updatedGeometry of
+				[] -> Nothing
+				_ -> Just $ updateCache (M.fromList updatedGeometry) renderObjs
+
+			unless (closeRequested == Just True) $ case {- newGeometry -} newGeometry' of
 				Nothing -> step t'
-				Just m -> loop cameraVar shader win viewmatrixBuffer [m] t'
+				Just m -> loop cameraVar readRender shader win viewmatrixBuffer m t'
+				-- Just m -> loop cameraVar shader win viewmatrixBuffer (M.singleton 0 [m]) t'
+
+
 		renderAction blank chunks = sequence_ $ (\chunk -> do
 			vertexArray <- newVertexArray $ vertices chunk
 			let primitiveArray = toPrimitiveArray TriangleList vertexArray
@@ -867,3 +1024,9 @@ renderGraph drawNode drawEdge gr = nodes <> edges
 			<$> lab gr n
 			<*> lab gr m
 			<*> pure e) =<< labEdges gr
+
+svgToColor :: SVGDrawData -> ColorRGBA
+svgToColor s = case (_stroke s, _fill s) of
+	(_, Just (RGB8 r g b)) -> RGBA8 r g b 0xff
+	(Just (RGB8 r g b), _) -> RGBA8 r g b 0xff
+	_ -> RGBA8 0xff 0x00 0xff 0xff
