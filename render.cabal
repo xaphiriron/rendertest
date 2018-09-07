@@ -96,6 +96,7 @@ executable render
                        stm >=2.4 && <2.5,
                        vector,
                        containers,
+                       rosezipper == 0.2,
                        random,
                        lens,
                        fgl,
