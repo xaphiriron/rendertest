@@ -25,6 +25,7 @@ import Linear.Vector
 import Data.PossibilitySpace
 import Data.Color
 import Data.Turtle
+import Data.Turtle.Polyhedra
 
 import Shape.Hex hiding (Shaped(..))
 import Shape
@@ -67,7 +68,7 @@ tuft size height rot material = fmap
 			(translateRecord (V3 0 h 0)
 			. rotateAroundY t
 			. (fmap $ const material))
-		$ cone 3 size size
+		$ cone 3 (fromIntegral size) (fromIntegral size)
 	where
 		t = if rot
 			then 60 / 180 * pi
@@ -93,7 +94,7 @@ broadleafTree = Broadleaf
 
 renderBroadleaf :: BroadleafTree -> [TRecord TreeMaterial]
 renderBroadleaf (Broadleaf trunkHeight canopyHeight trunkRot canopyRot leafMat) = mconcat
-	[ rotateAroundY (fromIntegral trunkRot) . fmap (const LightWood) <$> prism 4 (V3 2 trunkHeight 2)
+	[ rotateAroundY (fromIntegral trunkRot) . fmap (const LightWood) <$> prism 4 (fromIntegral <$> V3 2 trunkHeight 2)
 	, rotateAroundY (fromIntegral canopyRot) . translateRecord (V3 0 h 0) . fmap (const leafMat) <$> capsule 4 0.5 (V3 6 canopyHeight 6)
 	]
 	where
@@ -128,7 +129,7 @@ rock mat = Rock
 renderRock :: Rock -> [TRecord RockMaterial]
 renderRock (Rock mat (V2 ox oz) sides width height slope) =
 	translateRecord (fromIntegral <$> V3 ox 0 oz) . fmap (const mat)
-		<$> taperedPrism sides width (max 0 $ width - (height * slope `div` 2)) (height * 2)
+		<$> taperedPrism sides (fromIntegral width) (fromIntegral $ max 0 $ width - (height * slope `div` 2)) (fromIntegral $ height * 2)
 
 rocks :: RockMaterial -> RenderSpace Rock RockMaterial ColorRGB
 rocks mat = RenderSpace (rock mat) renderRock (const rockMatColor)
@@ -149,7 +150,7 @@ data Stalk = Stalk Int Int
 stalk = Stalk <$> rangeNum (2, 9) <*> rangeNum (0, 89)
 
 renderStalk :: Stalk -> [TRecord TreeMaterial]
-renderStalk (Stalk height rotation) = rotateAroundY t . fmap (const Greenish) <$> prism 4 (V3 1 height 1)
+renderStalk (Stalk height rotation) = rotateAroundY t . fmap (const Greenish) <$> prism 4 (fromIntegral <$> V3 1 height 1)
 	where
 		t = fromIntegral rotation / 180 * pi
 
@@ -205,7 +206,7 @@ cedarTrees = RenderSpace cedarTree renderCedar (const treeMatColor)
 renderCedar :: CedarTree -> [TRecord TreeMaterial]
 renderCedar (CedarTree trunkHeight baseHeight topHeight rot leafColor) = rotateAroundY rot <$>
 	mconcat
-		[ fmap (const LightWood) <$> prism 4 (V3 3 trunkHeight 3)
+		[ fmap (const LightWood) <$> prism 4 (fromIntegral <$> V3 3 trunkHeight 3)
 		, translateRecord (V3 0 (fromIntegral (trunkHeight + baseHeight) * (-1)) 0)
 			. fmap (const leafColor)
 				<$> flip (base <> sideCap)
@@ -214,8 +215,8 @@ renderCedar (CedarTree trunkHeight baseHeight topHeight rot leafColor) = rotateA
 				<$> (tip <> sideTop)
 		]
 	where
-		(sideCap, base, _) = splitTaperedPrism 3 15 10 baseHeight
-		(sideTop, tip, _) = splitTaperedPrism 3 15 3 topHeight
+		(sideCap, base, _) = splitTaperedPrism 3 15 10 (fromIntegral baseHeight)
+		(sideTop, tip, _) = splitTaperedPrism 3 15 3 (fromIntegral topHeight)
 
 data PalmTree = PalmTree Int Int Int Float
 	deriving (Eq, Ord, Show, Read)
@@ -232,7 +233,7 @@ palmTrees = RenderSpace palmTree renderPalm (\_ -> treeMatColor)
 
 renderPalm :: PalmTree -> [TRecord TreeMaterial]
 renderPalm (PalmTree trunkHeight leafSize leafCount rotation) = fmap (rotateAroundY rotation) $ mconcat
-	[ fmap (const LightWood) <$> cone 6 3 trunkHeight
+	[ fmap (const LightWood) <$> cone 6 3 (fromIntegral trunkHeight)
 	, leaves
 	]
 	where
@@ -240,105 +241,3 @@ renderPalm (PalmTree trunkHeight leafSize leafCount rotation) = fmap (rotateArou
 		leaf = translateRecord (V3 (fromIntegral leafSize * (-1)) (fromIntegral trunkHeight * (-1)) 0) . fmap (const Greenish)
 			<$> octohedron (V3 (fromIntegral leafSize) 2 4)
 		leafTheta = pi / (fromIntegral leafCount / 2)
-
-
--- --------
-
-rotateAroundY :: Float -> TRecord a -> TRecord a
-rotateAroundY t = mapRecord (\(V3 x y z) -> V3 (x * cos t - z * sin t) y (z * cos t + x * sin t))
-
-capsule :: Int -> Float -> V3 Int -> [TRecord ()]
-capsule sides capsuleHeight scaling@(V3 x y z) = rescale <$> mconcat
-	[ sidePolys -- TODO: shrink the sides slightly? i guess?
-	-- place the top cap on top of the size-2 sides
-	, translateRecord (V3 0 (-2) 0) . mapRecord (\pt -> pt * V3 1 capsuleHeight 1)
-		<$> capSides
-	, translateRecord (V3 0 (-2) 0) . mapRecord (\pt -> pt * V3 1 capsuleHeight 1)
-		<$> capTop
-	-- flip bottom cap
-	, reverseWinding . mapRecord (\pt -> pt * V3 1 ((-1) * capsuleHeight) 1)
-		<$> capSides
-	, reverseWinding . mapRecord (\pt -> pt * V3 1 ((-1) * capsuleHeight ) 1)
-		<$> capTop
-	]
-	where
-		(capSides, capTop, _) = splitTaperedPrism sides 2 1 1
-		(sidePolys, _, _) = splitTaperedPrism sides 2 2 2
-		-- we generate the prisms as size-2 b/c we want the caps to be size 0.5 but they don't take floats, so, `2 1` is the `1 0.5`, and then we scale them by 0.5 here before applying the real scaling value. its great.
-		rescale :: TRecord a -> TRecord a
-		rescale = mapRecord (\p -> p * 0.5 * (fromIntegral <$> scaling))
-
-prism :: Int -> V3 Int -> [TRecord ()]
-prism sides scaling = base : top : faces
-	where
-		faces = fmap makeFace . take sides $ zip ring (drop 1 ring)
-		base = TPoly $ Convex $ (\pt -> TP (scale pt) ()) <$> take sides ring
-		top = TPoly $ Convex $ (\pt -> TP (scale $ pt + V3 0 1 0) ()) <$> reverse (take sides ring)
-		makeFace (pt1, pt2) = TPoly $ Convex $ (\pt -> TP pt ()) . scale
-			<$> [pt2, pt1, pt1 + V3 0 1 0, pt2 + V3 0 1 0]
-		ring = cycle $ (\(V2 x y) -> V3 x 0 y) <$> poly sides
-		scale pt = pt * (fromIntegral <$> scaling * V3 1 (-1) 1)
-
-flip :: [TRecord a] -> [TRecord a]
-flip = fmap $ reverseWinding . mapRecord (\pt -> pt * V3 1 (-1) 1)
-
-splitTaperedPrism :: Int -> Int -> Int -> Int -> ([TRecord ()], [TRecord ()], [TRecord ()])
-splitTaperedPrism sides baseWidth tipWidth height = if tipWidth <= 0
-	then case splitCone sides baseWidth height of
-		(faces, base) -> (faces, [], base)
-	else (faces, [top], [base])
-	where
-		faces = fmap makeFace . take sides $ zip4 baseRing (drop 1 baseRing) (drop 1 tipRing) tipRing
-		base = TPoly $ Convex $ (\pt -> TP pt ()) <$> take sides baseRing
-		top = TPoly $ Convex $ (\pt -> TP pt ()) <$> reverse (take sides tipRing)
-		makeFace (pt1, pt2, pt3, pt4) = TPoly $ Convex $ (\pt -> TP pt ())
-			<$> [pt4, pt3, pt2, pt1]
-		baseRing = (^* fromIntegral baseWidth) <$> ring
-		tipRing = (+ V3 0 h 0) . (^* fromIntegral tipWidth) <$> ring
-		ring = cycle $ (\(V2 x y) -> V3 x 0 y) <$> poly sides
-		h = fromIntegral height * (-1)
-
-taperedPrism :: Int -> Int -> Int -> Int -> [TRecord ()]
-taperedPrism sides baseWidth tipWidth height =
-	case splitTaperedPrism sides baseWidth tipWidth height of
-		(faces, top, base) -> faces <> top <> base
-
-octohedron :: V3 Float -> [TRecord ()]
-octohedron scaling = (TPoly . Convex . fmap asPt) <$>
-	[ [down, front, left]
-	, [down, left, back]
-	, [down, back, right]
-	, [down, right, front]
-	, [up, left, front]
-	, [up, back, left]
-	, [up, right, back]
-	, [up, front, right]
-	]
-	where
-		asPt pt = TP (pt * scaling) ()
-		-- i don't know if these names are actually accurate V:
-		up   = V3 0 (-1) 0
-		down = V3 0 1 0
-		left = V3 (-1) 0 0
-		right = V3 1 0 0
-		front = V3 0 0 (-1)
-		back = V3 0 0 1
-
-splitCone :: Int -> Int -> Int -> ([TRecord ()], [TRecord ()])
-splitCone sides baseWidth height = (faces, [base])
-	where
-		faces = fmap makeTri . take sides $ zip ring (drop 1 ring)
-		base = TPoly $ Convex $ (\pt -> TP pt ()) <$> take sides ring
-		makeTri (pt1, pt2) =
-			TPoly $ Convex $ (\pt -> TP pt ()) <$> [pt2, pt1, tip]
-		tip = fromIntegral <$> V3 0 (-height) 0
-		ring = cycle $ (fromIntegral baseWidth *^) . (\(V2 x y) -> V3 x 0 y) <$> poly sides
-
-cone :: Int -> Int -> Int -> [TRecord ()]
-cone sides baseWidth height = case splitCone sides baseWidth height of
-	(faces, base) -> base <> faces
-
-poly :: Int -> [V2 Float]
-poly sides = fmap (\theta -> V2 (sin theta) (cos theta)) . take sides $ iterate (+ inc) 0
-	where
-		inc = pi * 2 / fromIntegral sides

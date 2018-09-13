@@ -27,7 +27,7 @@ import Prelude hiding ((.), id)
 import Control.Arrow (first, second, (***))
 import Control.Applicative
 import Control.Category
-import Control.Monad (unless, (<=<), foldM, join)
+import Control.Monad (unless, (<=<), foldM, join, when)
 import Control.Monad.IO.Class
 import Control.Concurrent
 import Control.Concurrent.STM
@@ -64,13 +64,15 @@ import Shape
 -- import Shape.House
 -- import Shape.Coin
 import Shape.Plant
+import Data.LSystem.SignalingPlant
+import Shape.PlantTypes (plantRenderSpace)
 import Shape.HexField
 import GLRenderer
 
 import Shape.Tree
 
 import Reactive.Banana.Combinators (Event, Behavior, MonadMoment, filterJust, accumB, valueB, valueBLater, (<@>), stepper, never, filterE, filterApply)
-import Reactive.Banana.Frameworks (EventNetwork, reactimate, actuate, compile, fromAddHandler, fromPoll, mapEventIO)
+import Reactive.Banana.Frameworks (EventNetwork, reactimate, actuate, compile, fromAddHandler, fromPoll, mapEventIO, MomentIO)
 import Control.Event.Handler
 
 import Input.Types
@@ -139,6 +141,12 @@ place plant on tile
 
 -}
 
+data Thing os = Thing
+	{ handler :: TChan (RenderUpdate os) -> Event FauxGLFW -> MomentIO (Event (IO ()))
+	}
+
+type RenderUpdate os = (Integer, UpdateState (ContextT GLFW.Handle os IO [RenderObject os (B4 Float, B4 Float, B2 Float)])) -- sorry about the type
+
 foo :: ContextT GLFW.Handle os IO ()
 foo = do
 	win <- newWindow (WindowFormatColorDepth GP.RGBA8 GP.Depth16)
@@ -160,6 +168,8 @@ foo = do
 	blank :: Texture2D os (GP.Format RGBAFloat) <- newTexture2D GP.RGBA8 (V2 1 1) 1
 	writeTexture2D blank 0 (V2 0 0) (V2 1 1) [V4 1 1 1 1 :: V4 Float]
 
+	let plant = plantThing blank
+
 	network <- liftIO $ compile $ do
 		rawEv <- fromAddHandler addRawGLFWHandler -- Event RawGLFW
 		windowState <- accumB (InputState (V2 0 0))
@@ -169,41 +179,10 @@ foo = do
 				<$> rawEv
 		let fauxEvs = filterJust $ convertGLFW <$> rawEv <#> windowState
 
-		let randomIndex = generateRandomIndex $ renderMap svgToColor (geneticPlantsRender 0)
+		plantHandler <- (handler plant) write fauxEvs
 
-		randFunc <- mapEventIO (\_ -> randomIndex)
-			$ fmap (const ()) $ filterE (\ev -> ev == KeyDown Key'R) fauxEvs
-		startIx <- liftIO $ randomIndex
-		randIx <- stepper startIx randFunc
-		number <- mdo
-			let updates = filterJust $ (\ev ix -> case ev of
-				KeyDown Key'Space -> Just $ first (+ 1) -- grow one step
-				KeyDown Key'R -> Just $ const 1 *** const ix -- reset back to default, but with a new seed
-				_ -> Nothing
-				) <$> fauxEvs <#> randIx
-			number <- stepper (1, startIx) $ updates <#> number
-			return number
-
-		let plevs = (\ev (steps, ix) -> case ev of
-			-- KeyUp Key'R -> modifyMVar_ camVar $ pure . first (const True)
-			-- these just both do a rerender
-			KeyUp Key'R -> do
-					putStrLn $ "(on reset) steps: " <> show steps <> "; ix: " <> show ix
-					liftIO $ atomically $ writeTChan write (1, Replace $ do
-						plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
-							$ generateSpace ix $ renderMap svgToColor (geneticPlantsRender steps)
-						plantMesh <- generateRenderObject blank plantPolys
-						return [plantMesh])
-			KeyUp Key'Space -> do
-					putStrLn $ "(on increment) steps: " <> show steps <> "; ix: " <> show ix
-					liftIO $ atomically $ writeTChan write (1, Replace $ do
-						plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
-							$ generateSpace ix $ renderMap svgToColor (geneticPlantsRender steps)
-						plantMesh <- generateRenderObject blank plantPolys
-						return [plantMesh])
-			_ -> return ()) <$> fauxEvs <#> number
 		let camera = cameraControl camVar <$> fauxEvs
-		reactimate $ camera <> plevs
+		reactimate $ camera <> plantHandler
 
 	liftIO $ actuate network
 
@@ -267,7 +246,7 @@ foo = do
 			return [worldMesh])
 		writeTChan write (1, Replace $ do
 			plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
-				$ generateRandomSpace $ renderMap svgToColor (geneticPlantsRender 15)
+				$ generateRandomSpace $ plantWhatever 15
 			plantMesh <- generateRenderObject blank plantPolys
 			return [plantMesh])
 
@@ -275,6 +254,42 @@ foo = do
 	loop camVar read shader win viewmatrixBuffer
 		mempty
 		(0 :: Float)
+
+plantWhatever = renderMap svgToColor
+	. plantRenderSpace (Just $ (/ 20) . sqrt . fst) (fluxPlantSpace)
+
+plantThing :: Texture2D os (GP.Format RGBAFloat) -> Thing os
+plantThing blank = Thing
+	{ handler = \write evs -> do
+			let randomIndex = generateRandomIndex $ plantWhatever 0
+			randFunc <- mapEventIO (\_ -> randomIndex)
+				$ fmap (const ()) $ filterE (\ev -> ev == KeyDown Key'R) evs
+			startIx <- liftIO $ randomIndex
+			randIx <- stepper startIx randFunc
+			number <- mdo
+				let updates = filterJust $ (\ev ix -> case ev of
+					KeyDown Key'Space -> Just $ first (+ 1) -- grow one step
+					KeyDown Key'R -> Just $ const 1 *** const ix -- reset back to default, but with a new seed
+					_ -> Nothing
+					) <$> evs <#> randIx
+				number <- stepper (1, startIx) $ updates <#> number
+				return number
+			let debugPrint = (\ev (steps, ix) -> case ev of
+				KeyUp Key'R ->
+					putStrLn $ "(on reset) steps: " <> show steps <> "; ix: " <> show ix
+				KeyUp Key'Space ->
+					putStrLn $ "(on increment) steps: " <> show steps <> "; ix: " <> show ix
+				_ -> return ()
+				)
+			let rerender = (\ev (steps, ix) -> when (ev `elem` [KeyUp Key'R, KeyUp Key'Space]) $ liftIO $ atomically $ writeTChan write (1, Replace $ do
+					plantPolys <- liftIO $ fmap (fmap $ mapRecord (* 2))
+						$ generateSpace ix $ plantWhatever steps
+					plantMesh <- generateRenderObject blank plantPolys
+					return [plantMesh])
+				)
+			return $ (debugPrint <> rerender) <$> evs <#> number
+	}
+
 
 setRawCallbacks :: Window os c ds -> ContextT GLFW.Handle os IO (AddHandler RawGLFW)
 setRawCallbacks win = do
@@ -519,7 +534,7 @@ updateCache = M.merge
 
 loop :: (ContextColorFormat c, DepthRenderable ds, Fractional b, Color c Float ~ V4 b) =>
 	MVar (Bool, RawCameraInput)
-	-> TChan (Integer, UpdateState (ContextT GLFW.Handle os IO [RenderObject os (B4 Float, B4 Float, B2 Float)])) -- sorry about the type
+	-> TChan (RenderUpdate os)
 	-> (((Texture2D os (GP.Format RGBAFloat)), PrimitiveArray Triangles (B4 Float, B4 Float, B2 Float), Bool) -> Render os ())
 	-> Window os c ds
 	-> Buffer os (Uniform (V4 (B4 Float)))

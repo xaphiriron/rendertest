@@ -1,3 +1,5 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Data.LSystem
 	( LSystem(..)
 	, dcfLSystem
@@ -19,6 +21,7 @@ module Data.LSystem
 
 	, evolveFull
 	, evolveFullM
+
 	) where
 
 import Control.Monad
@@ -28,8 +31,10 @@ import Data.Monoid
 import Data.Maybe
 import Data.Tree
 import Data.Tree.Zipper
+import Data.List (foldl')
 
 import Data.Turtle
+import Utility.Tree
 
 {-
 an l-system would have three predicates: `ignore this symbol for purposes of matching prev/next`; `this symbol is a [-equivalent`; `this symbol is a ]-equivalent`. that first predicate would be the difficult-to-manage one, i think? since depending on how many symbols are flagged that it could lead to arbitrarily-long processing times
@@ -115,30 +120,12 @@ step (LSystem push pop ignore adv) = go []
 				(False, False, True) -> go (drop 1 prevs) rest -- remove the in-stack prev
 				_ -> go (cur : drop 1 prevs) rest -- replace the old prev symbol with this one
 			return $ ev <> rest
-{-
-step :: Monad m => LSystem m a -> [a] -> m [a]
-step (LSystem _ _ ignore adv) = go Nothing
-	where
-		nextValid [] = Nothing
-		nextValid (v:rs)
-			| ignore v  = nextValid rs
-			| otherwise = Just v
-		go _ [] = pure []
-		go prev (cur:[]) = do
-			adv prev cur Nothing
-		go prev (cur:rs) = do
-			ev <- adv prev cur (nextValid rs)
-			rest <- if ignore cur
-				then go prev rs
-				else go (Just cur) rs
-			return $ ev <> rest
--}
-{-
-KINDS OF LSYSTEMS:
 
-the basic kind (w/ parametric possiblities)
-evolving in a monad (a -> m [a])
-prelookup and postlookup (respecting stack motions) -- something like Maybe a -> a -> Maybe a -> [a]
+{-
+to add
+
+* reading environment state (light, soil/air/etc materials)
+* writing environment state (nutrients, light, plant material state)
 
 the kind that evolve based on a "condition" on a "map" (e.g., evolve in the direction of light by checking light on the location and growing or withering based on that) (wait is this just a specific case of "in a (state) monad"?)
 -}
@@ -164,7 +151,7 @@ stepString lsys = fmap treeAsString . stepTree lsys . stringAsTree lsys
 
 -- todo: probably would be more efficient w/ the filter happening somewhere else, but idk where exactly to put it so that ignored symbols get replicated in the next generation regardless. maybe laziness will help regardless
 stepTree :: Applicative m => FullContextLSystem m a -> Tree [a] -> m (Tree [a])
-stepTree (FCLSystem _ _ ignore adv) z = contextMapA expand z
+stepTree l@(FCLSystem _ _ ignore adv) z = contextMapA l expand z
 	where expand pred c succ = if ignore c
 		then pure [c]
 		else adv (filter (not . ignore) pred) c (filter (not . ignore) <$> succ)
@@ -191,45 +178,45 @@ contextMap f = fmap (fmap $ \(pred, a, succ) -> f pred a succ) . contextT
 contextMapL :: ([a] -> a -> Tree [a] -> [b]) -> Tree [a] -> Tree [b]
 contextMapL f = fmap ((\(pred, a, succ) -> f pred a succ) =<<) . contextT
 
-contextMapA :: Applicative m => ([a] -> a -> Tree [a] -> m [b]) -> Tree [a] -> m (Tree [b])
-contextMapA f = sequenceA
-	. fmap (\mas -> fmap concat . sequenceA $ (\(pred, a, succ) -> f pred a succ) <$> mas)
-	. contextT
+
+{- the 'stringAsTree l . treeAsString' part isn't ideal, but it's pretty tricky to correctly reconstruct each expansion, especially given that l-systems like
+	seed: xyy
+	x -> [x[
+	y -> y]
+exist and need to be properly handled
+-}
+contextMapA :: forall m a b. Applicative m => FullContextLSystem m a -> ([a] -> a -> Tree [a] -> m [a]) -> Tree [a] -> m (Tree [a])
+contextMapA l f t = fmap (removeEmpties . stringAsTree l . treeAsString) mExtractTree
+	where
+		mExtractTree :: m (Tree [a])
+		mExtractTree = sequenceA . fmap (fmap concat . sequenceA) $ advancedTree
+		advancedTree :: Tree ([m [a]])
+		advancedTree = (\ms -> (\(left, pred, right) -> f left pred right) <$> ms) <$> contextTree
+		contextTree :: Tree [([a], a, Tree [a])]
+		contextTree = contextT t
+
+reunify :: FullContextLSystem m a -> Tree (Tree [a]) -> Tree [a]
+reunify l t = stringAsTree l $ treeAsString $ fmap treeAsString $ t
 
 treeAsString :: Tree [a] -> [a]
 treeAsString (Node str chs) = str <> (treeAsString =<< chs)
 
--- this creates a tree from a string, and does not do any further processing (e.g., stripping the push/pop symbols themselves, or deleting ignored nodes)
+--- this creates a tree from a string, and does not do any further processing (e.g., stripping the push/pop symbols themselves, or deleting ignored nodes)
 stringAsTree :: FullContextLSystem m a -> [a] -> Tree [a]
-stringAsTree (FCLSystem push pop _ _) = fullReverse . toTree . go (fromTree $ pure [])
+stringAsTree (FCLSystem push pop _ _) =
+		fullReverse . toTree . snd
+		. foldl handleSymbol ([0], fromTree $ Node [] [])
 	where
-		go z [] = z
-		go z (a:as)
-			| push a = go (jumpToNewBranch $ addAsNewBranch [a] z) as
-			| pop a = case parent (addSymbolToCur a z) of
-				Nothing -> error "unmatched pop"
-				{- if there's nothing in the parent node and this branch is the only branch from it, then we have a state like `a[bc][de]` where `[de]` should be considered to be the direct child of `a`, same as `[bc]`. so:
-					pull the latest branch up, attach it to its grandparent
-					stay focused on the now-childless [] branch
-				otherwise
-					we need to make a new [] branch
-				-}
-				Just z' -> if null (label z') && length (subForest $ tree z') == 1 && isContained z'
-					then let
-							latestBranch = head $ subForest $ tree z'
-							cutTree = modifyTree (\t -> t { subForest = [] }) z'
-						in case (do
-								grandparent <- parent cutTree
-								addBeforeGap latestBranch grandparent) of
-							Nothing -> error ":("
-							Just z' -> go (jumpToNewBranch z') as
-					else go (jumpToNewBranch $ addAsNewBranch [] z') as
-			| otherwise = go (addSymbolToCur a z) as
-		addSymbolToCur a = modifyTree (\t -> t {rootLabel = a : rootLabel t })
-		addAsNewBranch a = modifyTree (\t -> t {subForest = pure a : subForest t })
-		addBeforeGap :: Tree a -> TreePos Full a -> Maybe (TreePos Full a)
-		addBeforeGap a z = do
-				gap <- next . first . children $ z
-				parent . insert a $ gap
+		handleSymbol (stack, z) a
+			| push a = (0 : stack, jumpToNewBranch $ addToNewBranch [a] z)
+			| pop a = case stack of
+				n:m:rs -> (m + 1 : rs, jumpToNewBranch $ addToNewBranch [] $ stepUp (n+1) (addToCur a z))
+				_ -> error $ "unmatched pop (1)"
+			| otherwise = (stack, addToCur a z)
+		addToCur a = modifyTree (\t -> t {rootLabel = a : rootLabel t })
+		addToNewBranch a = modifyTree (\t -> t {subForest = pure a : subForest t })
 		jumpToNewBranch = fromMaybe (error "couldn't find new branch") . firstChild
+		stepUp n t = case n of
+			0 -> t
+			n -> stepUp (n - 1) $ fromMaybe (error "unmatched pop (2)") $ parent t
 		fullReverse (Node syms forest) = Node (reverse syms) $ fullReverse <$> reverse forest

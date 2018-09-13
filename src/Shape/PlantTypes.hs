@@ -1,5 +1,7 @@
 module Shape.PlantTypes
 	( Plant(..)
+	, plantEvolve
+	, plantRenderSpace
 
 	, Honda(..)
 	, HondaParams(..)
@@ -52,22 +54,61 @@ module Shape.PlantTypes
 
 import Control.Monad.Identity
 import Data.Monoid
+import Data.Maybe
 
-import Linear.Vector
+import Linear.V3
+import Linear.Vector hiding (zero)
 
 import Data.Color
 import Data.Turtle
+import Data.Turtle.Polyhedra hiding (poly)
 import Data.LSystem
 
+import Data.PossibilitySpace
 import Utility.SVGRender
+import Shape
 
-data Plant c m a = PlantIndexed
-	{ postProcess :: a -> [a]
-	, lsystem :: LSystem m a
-	, seed :: [a]
-	, zero :: c
-	, index :: c -> SVGDrawData
-	}
+data Plant c m a
+	= PlantIndexed
+		{ postProcess :: a -> [a]
+		, lsystem :: LSystem m a
+		, seed :: [a]
+		, zero :: c
+		, index :: c -> SVGDrawData
+		}
+	| FCPlantIndexed
+		{ postProcess :: a -> [a]
+		, fclsystem :: FullContextLSystem m a
+		, seed :: [a]
+		, zero :: c
+		, index :: c -> SVGDrawData
+		}
+
+plantEvolve :: Plant c Identity a -> Int -> [a]
+plantEvolve p iterations = case p of
+	PlantIndexed {} -> postProcess p =<< (evolve (lsystem p) iterations $ seed p)
+	FCPlantIndexed {} -> postProcess p =<< (treeAsString . evolveFull (fclsystem p) iterations $ stringAsTree (fclsystem p) (seed p))
+
+plantRenderSpace :: Maybe (c -> Float) -> PossibilitySpace (Plant c Identity (TurtleSymbol c a)) -> Int -> RenderSpace (Plant c Identity (TurtleSymbol c a)) c SVGDrawData
+plantRenderSpace mwidthf plant iterations = RenderSpace
+	(plant)
+	(\plant -> lineHandler (asPrism widthf) $ runActions (defaultTurtle $ zero plant) $ getActions $ plantEvolve plant iterations)
+	(\plant b -> index plant b)
+	where
+		widthf = fromMaybe (const 0.25) mwidthf
+
+-- replace lines with prisms
+asPrism :: (a -> Float) -> TPoint a -> TPoint a -> [TRecord a]
+asPrism f (TP p a) (TP q a') = at p (q - p) . fmap (const a)
+	<$> taperedPrism 4 (f a) (f a') 1
+
+lineHandler :: (TPoint a -> TPoint a -> [TRecord a]) -> [TRecord a] -> [TRecord a]
+lineHandler f = (replaceLine =<<)
+	where
+		replaceLine rec = case rec of
+			TLine p q -> f p q
+			x -> [x]
+
 
 data Honda = Axis Float Float | ApexA Float Float | ApexB Float Float
 

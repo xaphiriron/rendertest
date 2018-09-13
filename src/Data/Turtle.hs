@@ -6,6 +6,9 @@ module Data.Turtle
 
 	, TurtleSymbol(..)
 	, defaultTurtle
+	, isTurtlePush
+	, isTurtlePop
+	, isTurtleAction
 
 	, PolyState(..)
 	, TRecord(..)
@@ -67,6 +70,21 @@ instance Show a => Show (TurtleAction a) where
 
 data TurtleSymbol a b = TA (TurtleAction a) | A b
 	deriving (Show)
+
+isTurtlePush :: TurtleSymbol a b -> Bool
+isTurtlePush t = case t of
+	TA Push -> True
+	_ -> False
+
+isTurtlePop :: TurtleSymbol a b -> Bool
+isTurtlePop t = case t of
+	TA Pop -> True
+	_ -> False
+
+isTurtleAction :: TurtleSymbol a b -> Bool
+isTurtleAction t = case t of
+	TA _ -> True
+	_ -> False
 
 data Turtle a = Turtle
 	{ _facing :: Quaternion Float

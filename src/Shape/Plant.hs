@@ -4,7 +4,6 @@ module Shape.Plant
 	, GeneticPlant(..)
 	, geneticPlants
 	, plantIndex
-	, geneticPlantsRender
 
 	, branchingPlants
 	, bplantIndex
@@ -143,17 +142,6 @@ data LeafStructure = LeafHex Float Int | LeafDiamond Float Int Int
 
 data Petal = Diamond Int | Triangle Int | Square Int Int
 	deriving (Eq, Ord, Show, Read)
-
-geneticPlantsRender :: Int -> RenderSpace GeneticPlant GIndex SVGDrawData
-geneticPlantsRender iterations = RenderSpace
-	geneticPlants
-	(\genome -> let T.PlantIndexed postProcess lsys seed z ix = plantIndex genome
-		in runActions (defaultTurtle z) $ getActions
-			$ postProcess =<< (evolve lsys iterations $ seed)
-	)
-	gindexColor
-
-
 
 geneticPlants :: PossibilitySpace GeneticPlant
 geneticPlants = GP
